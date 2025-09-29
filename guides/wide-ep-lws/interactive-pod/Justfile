@@ -12,6 +12,7 @@ delete-bench NAMESPACE:
 # kubectl cp benchmark_one_concurrent_req.py {{NAMESPACE}}/{{POD_NAME}}:/app/vllm/benchmarks/benchmark_one_concurrent.py && \
 exec-bench NAMESPACE:
     kubectl cp Justfile.remote {{NAMESPACE}}/{{POD_NAME}}:/app/Justfile && \
+    kubectl cp /home/nick/work/deepseek/ {{NAMESPACE}}/{{POD_NAME}}:/model && \
     kubectl cp sweep.sh {{NAMESPACE}}/{{POD_NAME}}:/app/sweep.sh && \
     kubectl exec -it -n {{NAMESPACE}} {{POD_NAME}} -- /bin/bash
 

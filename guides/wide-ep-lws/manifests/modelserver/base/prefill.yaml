@@ -26,7 +26,7 @@ spec:
         containers:
         - name: vllm-worker
           # image: ghcr.io/llm-d/llm-d-dev:pr-188
-          image: quay.io/nlucches/vllm:nixl-ds-patch
+          image: quay.io/nlucches/vllm:nixl-ds-patch-upstream
           securityContext:
             capabilities:
               add:
@@ -44,7 +44,7 @@ spec:
           #     # RUN vLLM prefill worker
           #     #################
           #     source /opt/vllm/bin/activate
-          #     exec vllm serve facebook/opt-125m --port 8000
+          #     exec vllm serve facebook/opt-125m --port 8000 --enforce-eager
           args:
             - |-
               #################
@@ -53,10 +53,12 @@ spec:
             
               source /opt/vllm/bin/activate
               exec vllm serve \
-                /huggingface-cache/models--test/DeepSeek-V3.2-Preview-Fix/ \
+                deepseek-ai/DeepSeek-V3.2-Exp \
                 --port 8000 \
                 --disable-uvicorn-access-log \
                 --tensor-parallel-size 8 \
+                --max-num-seqs 1024 \
+                --max-model-len 32768 \
                 --enforce-eager \
                 --trust-remote-code \
                 --kv_transfer_config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
@@ -95,7 +97,9 @@ spec:
           - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
             value: "1"
           - name: VLLM_USE_DEEP_GEMM
-            value: "1"
+            value: "0" # TODO wentao fix
+          - name: VLLM_NIXL_ABORT_REQUEST_TIMEOUT
+            value: "10000"
           - name: VLLM_ALL2ALL_BACKEND
             value: deepep_high_throughput
           - name: NVIDIA_GDRCOPY

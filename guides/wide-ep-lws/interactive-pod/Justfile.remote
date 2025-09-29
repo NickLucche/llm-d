@@ -2,8 +2,11 @@
 
 eval MODEL URL CONCURRENT LIMIT:
     lm_eval --model local-completions --tasks gsm8k \
-    --model_args model={{MODEL}},base_url={{URL}}/v1/completions,num_concurrent={{CONCURRENT}},tokenized_requests=false \
+    --model_args model={{MODEL}},base_url={{URL}}/v1/completions,num_concurrent={{CONCURRENT}},max_retries=3,tokenized_requests=false \
     --limit {{LIMIT}}
+
+eval-shot MODEL URL CONCURRENT LIMIT:
+    lm_eval --model local-completions --tasks gsm8k --num_fewshot 20 --model_args model=deepseek-ai/DeepSeek-V3.2-Exp,base_url=http://10.16.4.2/v1/completions,num_concurrent=200,tokenized_requests=false
 
 gpqa MODEL URL CONCURRENT NSHOTS:
     lm_eval --model local-completions --tasks gpqa_diamond_n_shot --num_fewshot NSHOTS \
