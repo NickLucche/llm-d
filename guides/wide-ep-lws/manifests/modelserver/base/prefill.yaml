@@ -25,7 +25,8 @@ spec:
               sizeLimit: 2Gi # 2Gi for NCCL 2.27 to be safe
         containers:
         - name: vllm-worker
-          image: ghcr.io/llm-d/llm-d-dev:pr-188
+          # image: ghcr.io/llm-d/llm-d-dev:pr-188
+          image: quay.io/nlucches/vllm:nixl-ds-patch
           securityContext:
             capabilities:
               add:
@@ -37,28 +38,54 @@ spec:
           command:
             - /bin/bash
             - -c
+          # args:
+          #   - |-
+          #     #################
+          #     # RUN vLLM prefill worker
+          #     #################
+          #     source /opt/vllm/bin/activate
+          #     exec vllm serve facebook/opt-125m --port 8000
           args:
             - |-
               #################
               # RUN vLLM prefill worker
               #################
-              START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
             
               source /opt/vllm/bin/activate
               exec vllm serve \
-                deepseek-ai/DeepSeek-R1-0528 \
+                /huggingface-cache/models--test/DeepSeek-V3.2-Preview-Fix/ \
                 --port 8000 \
                 --disable-uvicorn-access-log \
-                --enable-expert-parallel \
-                --data-parallel-hybrid-lb \
-                --data-parallel-size $((LWS_GROUP_SIZE * DP_SIZE_LOCAL)) \
-                --data-parallel-size-local $DP_SIZE_LOCAL \
-                --data-parallel-address ${LWS_LEADER_ADDRESS} \
-                --data-parallel-rpc-port 5555 \
-                --data-parallel-start-rank $START_RANK \
+                --tensor-parallel-size 8 \
+                --enforce-eager \
                 --trust-remote-code \
                 --kv_transfer_config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+          # args:
+          #   - |-
+          #     #################
+          #     # RUN vLLM prefill worker
+          #     #################
+          #     START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
+            
+          #     source /opt/vllm/bin/activate
+          #     exec vllm serve \
+          #       /huggingface-cache/models--test/DeepSeek-V3.2-Preview-Fix/ \
+          #       --port 8000 \
+          #       --disable-uvicorn-access-log \
+          #       --enable-expert-parallel \
+          #       --data-parallel-hybrid-lb \
+          #       --data-parallel-size $((LWS_GROUP_SIZE * DP_SIZE_LOCAL)) \
+          #       --data-parallel-size-local $DP_SIZE_LOCAL \
+          #       --data-parallel-address ${LWS_LEADER_ADDRESS} \
+          #       --data-parallel-rpc-port 5555 \
+          #       --data-parallel-start-rank $START_RANK \
+          #       --trust-remote-code \
+          #       --kv_transfer_config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+
+          # for slow starts
           env:
+          - name: VLLM_SKIP_DEEP_GEMM_WARMUP
+            value: "1"
           - name: DP_SIZE_LOCAL
             value: "8"
           - name: TRITON_LIBCUDA_PATH

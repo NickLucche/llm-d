@@ -1,0 +1,69 @@
+# Run these on the cluster
+
+eval MODEL URL CONCURRENT LIMIT:
+    lm_eval --model local-completions --tasks gsm8k \
+    --model_args model={{MODEL}},base_url={{URL}}/v1/completions,num_concurrent={{CONCURRENT}},tokenized_requests=false \
+    --limit {{LIMIT}}
+
+gpqa MODEL URL CONCURRENT NSHOTS:
+    lm_eval --model local-completions --tasks gpqa_diamond_n_shot --num_fewshot NSHOTS \
+    --model_args model={{MODEL}},base_url={{URL}}/v1/completions,num_concurrent={{CONCURRENT}},tokenized_requests=false \
+
+sweep MODEL OUTFILE URL:
+  OUTFILE={{OUTFILE}} MODEL={{MODEL}} BASE_URL={{URL}} bash ./sweep.sh
+
+# just bench_one deepseek-ai/DeepSeek-V3-0324 http://infra-wide-ep-pd-inference-gateway-istio.llm-d-wide-ep-pd.svc.cluster.local 128
+bench_one MODEL URL INPUT_LEN:
+  python vllm/benchmarks/benchmark_one_concurrent.py \
+    --base-url {{URL}} \
+    --model {{MODEL}} \
+    --input-len {{INPUT_LEN}} \
+    --output-len 1 \
+    --num-requests 5 \
+    --seed $(date +%s)
+
+bench_one_prof MODEL URL INPUT_LEN:
+  curl -X POST {{URL}}/start_profile
+  python vllm/benchmarks/benchmark_one_concurrent.py \
+    --base-url {{URL}} \
+    --model {{MODEL}} \
+    --input-len {{INPUT_LEN}} \
+    --output-len 1 \
+    --num-requests 5 \
+    --seed $(date +%s)
+  curl -X POST {{URL}}/stop_profile
+
+bench_sharegpt MODEL URL:
+  python3 vllm/benchmarks/benchmark_serving.py \
+    --base-url {{URL}} \
+    --model {{MODEL}} \
+    --dataset-name sharegpt \
+    --dataset-path /app/vllm/benchmarks/ShareGPT_V3_unfiltered_cleaned_split.json \
+    --seed $(date +%s) \
+    --percentile-metrics ttft,tpot,itl,e2el \
+    --metric-percentiles 90,95,99 \
+    --ignore-eos
+
+prof_bench MODEL URL:
+  python3 vllm/benchmarks/benchmark_serving.py \
+    --base-url {{URL}} \
+    --model {{MODEL}} \
+    --dataset-name sharegpt \
+    --dataset-path /app/vllm/benchmarks/ShareGPT_V3_unfiltered_cleaned_split.json \
+    --seed $(date +%s) \
+    --percentile-metrics ttft,tpot,itl,e2el \
+    --metric-percentiles 90,95,99 \
+    --ignore-eos \
+    --profile \
+    --num-prompts 4 \
+    --sharegpt-output-len 1
+
+# just curl deepseek-ai/DeepSeek-V3-0324 infra-wide-ep-pd-inference-gateway-istio.llm-d-wide-ep-pd.svc.cluster.local
+curl MODEL URL:
+  curl -X POST {{URL}}/v1/completions \
+    -H "Content-Type: application/json" \
+    -d '{ \
+      "model": "{{MODEL}}", \
+      "prompt": "Red Hat is the best open source company by far across Linux, K8s, and AI, and vLLM has the greatest community in open source AI software infrastructure. I love vLLM because", \
+      "max_tokens": 150 \
+    }'

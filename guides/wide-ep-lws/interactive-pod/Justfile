@@ -1,0 +1,19 @@
+# Run these on the local machine
+
+POD_NAME := "interactive-pod"
+
+start-bench NAMESPACE:
+    kubectl apply -n {{NAMESPACE}} -f manifest.yaml
+
+delete-bench NAMESPACE:
+    kubectl delete pod -n {{NAMESPACE}} {{POD_NAME}}
+
+# wget https://raw.githubusercontent.com/robertgshaw2-redhat/vllm/7fbcbbfc45ae21cc9cdb0838ae35837e9f2afb0d/benchmarks/benchmark_one_concurrent_req.py && \
+# kubectl cp benchmark_one_concurrent_req.py {{NAMESPACE}}/{{POD_NAME}}:/app/vllm/benchmarks/benchmark_one_concurrent.py && \
+exec-bench NAMESPACE:
+    kubectl cp Justfile.remote {{NAMESPACE}}/{{POD_NAME}}:/app/Justfile && \
+    kubectl cp sweep.sh {{NAMESPACE}}/{{POD_NAME}}:/app/sweep.sh && \
+    kubectl exec -it -n {{NAMESPACE}} {{POD_NAME}} -- /bin/bash
+
+copy-results NAMESPACE FILENAME:
+    kubectl cp {{NAMESPACE}}/{{POD_NAME}}:/app/{{FILENAME}} ./{{FILENAME}}
