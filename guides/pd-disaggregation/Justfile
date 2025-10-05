@@ -1,0 +1,9 @@
+NAMESPACE := "llm-d-pd"
+# hf token from env
+
+secret:
+	oc create secret generic llm-d-hf-token \
+	--from-literal="HF_TOKEN=${HF_TOKEN}" \
+	--namespace {{NAMESPACE}} \
+	--dry-run=client -o yaml | oc apply -f -
+

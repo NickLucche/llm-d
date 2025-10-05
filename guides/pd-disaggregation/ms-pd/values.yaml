@@ -1,157 +1,285 @@
-multinode: false
+multinode: true
 
 modelArtifacts:
-  uri: "hf://RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic"
+  uri: "hf://deepseek-ai/DeepSeek-V3-0324"
   size: 100Gi
   authSecretName: "llm-d-hf-token"
-  name: "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic"
 
 routing:
+  # modelName: deepseek-ai/DeepSeek-V3-0324
   servicePort: 8000
   parentRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway
-      # name: infra-pd-inference-gateway # set in helmfile
+      # name: infra-wide-ep-pd-inference-gateway
 
   proxy:
-    image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.3.0-rc.2
-    connector: nixlv2
+    image: "ghcr.io/llm-d/llm-d-routing-sidecar:v0.3.0-rc.2"
     secure: false
+    debugLevel: 1
+    connector: nixlv2
+
+  # inferenceModel:
+  #   criticality: Critical
+  #   create: true
 
   inferencePool:
     create: false
-    # name: gaie-pd # set in helmfile
+    # name: ms-wide-ep-pd
 
   httpRoute:
     create: false
 
   epp:
     create: false
-
+ 
 decode:
-  parallelism:
-    tensor: 4
-    data: 1
+  priorityClassName: moe-testing
   create: true
   replicas: 1
+  parallelism:
+    # TODO: The value for parallelism.data is a hack to get the pod-per-node case working.
+    # This must equal the number of nodes rather than the dp_size.
+    data: 1
+    tensor: 1 # these will be derived based performance testing
   monitoring:
     podmonitor:
-      enabled: true
+      enabled: false
       portName: "metrics" # decode vLLM service port (from routing.proxy.targetPort)
       path: "/metrics"
       interval: "30s"
   containers:
-  - name: "vllm"
-    image: "ghcr.io/llm-d/llm-d-dev:pr-188"
-    modelCommand: vllmServe
-    args:
-      # Keep tensor-parallelism as the first set of arguments
-      - "--tensor-parallel-size"
-      - "4"
-      - "--block-size"
-      - "128"
-      - "--kv-transfer-config"
-      - '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}'
-      - "--disable-uvicorn-access-log"
-      - "--max-model-len"
-      - "32000"
-    env:
-      - name: VLLM_NIXL_SIDE_CHANNEL_HOST
-        valueFrom:
-          fieldRef:
-            fieldPath: status.podIP
-      - name: VLLM_LOGGING_LEVEL
-        value: DEBUG
-    ports:
-      - containerPort: 8200
-        name: metrics
-        protocol: TCP
-    resources:
-      limits:
-        memory: 64Gi
-        cpu: "16"
-        nvidia.com/gpu: "4"
-        rdma/ib: 1
-      requests:
-        memory: 64Gi
-        cpu: "16"
-        nvidia.com/gpu: "4"
-        rdma/ib: 1
-    mountModelVolume: true
-    volumeMounts:
-    - name: metrics-volume
-      mountPath: /.config
-    - name: shm
-      mountPath: /dev/shm
-    - name: torch-compile-cache
-      mountPath: /.cache
-  volumes:
-  - name: metrics-volume
-    emptyDir: {}
-  - name: shm
-    emptyDir:
-      medium: Memory
-      sizeLimit: "16Gi"
-  - name: torch-compile-cache
-    emptyDir: {}
+    - name: vllm
+      image: "ghcr.io/llm-d/llm-d-dev:pr-188"
+      imagePullPolicy: Always
+      workingDir: /code
+      command: ["/bin/bash", "-c"]
+      modelCommand: "custom"
+      args:
+        - |-
+          #################
+          # RUN vLLM decode worker
+          #################
+          START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
 
-prefill:
+          source /opt/vllm/bin/activate
+          exec vllm serve \
+            deepseek-ai/DeepSeek-V3-0324 \
+            --port 8200 \
+            --disable-log-requests \
+            --disable-uvicorn-access-log \
+            --enable-expert-parallel \
+            --data-parallel-hybrid-lb \
+            --tensor-parallel-size $TP_SIZE \
+            --data-parallel-size $((LWS_GROUP_SIZE * DP_SIZE_LOCAL)) \
+            --data-parallel-size-local $DP_SIZE_LOCAL \
+            --data-parallel-address ${LWS_LEADER_ADDRESS} \
+            --data-parallel-rpc-port 5555 \
+            --data-parallel-start-rank $START_RANK \
+            --trust-remote-code \
+            --kv_transfer_config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+            # --enable-eplb \
+            # --num-redundant-experts 32 \
+            # --eplb-window-size 1000 \
+            # --eplb-step-interval 3000 \
+            # --eplb-log-balancedness
+
+      ports:
+        - containerPort: 8200
+          name: metrics
+          protocol: TCP
+      env:
+        - name: VLLM_MOE_DP_CHUNK_SIZE
+          value: "512"
+        - name: DP_SIZE_LOCAL
+          value: "8"
+        - name: TRITON_LIBCUDA_PATH
+          value: "/usr/lib64"
+        - name: HF_HUB_DISABLE_XET
+          value: "1"
+        - name: VLLM_SKIP_P2P_CHECK
+          value: "1"
+        - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+          value: "1"
+        - name: VLLM_USE_DEEP_GEMM
+          value: "1"
+        - name: VLLM_ALL2ALL_BACKEND
+          value: "deepep_low_latency"
+        - name: NVIDIA_GDRCOPY
+          value: "enabled"
+        - name: NVSHMEM_DEBUG
+          value: "INFO"
+        - name: NVSHMEM_REMOTE_TRANSPORT
+          value: "ibgda"
+        - name: NVSHMEM_IB_ENABLE_IBGDA
+          value: "true"
+        - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
+          value: "eth0"
+        - name: GLOO_SOCKET_IFNAME
+          value: "eth0"
+        - name: NCCL_SOCKET_IFNAME
+          value: "eth0"
+        - name: NCCL_IB_HCA
+          value: "ibp"
+        - name: VLLM_LOGGING_LEVEL
+          value: "INFO"
+        - name: HF_HUB_CACHE
+          value: /huggingface-cache/hub
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        - name: VLLM_TORCH_PROFILER_DIR
+          value: /home/vllm
+        - name: DISABLE_GLOO_ALLREDUCE
+          value: "1"
+        - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      resources:
+        limits:
+          cpu: 32
+          memory: 256Gi
+          ephemeral-storage: 64Gi
+          nvidia.com/gpu: 8
+        requests:
+          cpu: 32
+          memory: 256Gi
+          ephemeral-storage: 64Gi
+          nvidia.com/gpu: 8
+      mountModelVolume: false
+      volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+        - name: hf-cache
+          mountPath: /huggingface-cache
+  volumes:
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi
+    - name: hf-cache
+      hostPath:
+        path: /home/smo/.cache/huggingface
+        type: Directory
+prefill: 
+  priorityClassName: moe-testing
   create: true
-  replicas: 4
+  replicas: 1
+  parallelism:
+    # TODO: The value for parallelism.data is a hack to get the pod-per-node case working.
+    # This must equal the number of nodes rather than the dp_size.
+    data: 1
+    tensor: 1 # these will be derived based performance testing
   monitoring:
     podmonitor:
-      enabled: true
-      portName: "metrics" # prefill vLLM service port (from routing.servicePort)
+      enabled: false
+      portName: "metrics" # decode vLLM service port (from routing.proxy.targetPort)
       path: "/metrics"
       interval: "30s"
   containers:
-  - name: "vllm"
-    image: "ghcr.io/llm-d/llm-d-dev:pr-188"
-    modelCommand: vllmServe
-    args:
-      - "--block-size"
-      - "128"
-      - "--kv-transfer-config"
-      - '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}'
-      - "--disable-uvicorn-access-log"
-      - "--max-model-len"
-      - "32000"
-    env:
-      - name: VLLM_NIXL_SIDE_CHANNEL_HOST
-        valueFrom:
-          fieldRef:
-            fieldPath: status.podIP
-      - name: VLLM_LOGGING_LEVEL
-        value: DEBUG
-    ports:
-      - containerPort: 8000
-        name: metrics
-        protocol: TCP
-    resources:
-      limits:
-        memory: 64Gi
-        cpu: "8"
-        nvidia.com/gpu: "1"
-        rdma/ib: 1
-      requests:
-        memory: 64Gi
-        cpu: "8"
-        nvidia.com/gpu: "1"
-        rdma/ib: 1
-    mountModelVolume: true
-    volumeMounts:
-    - name: metrics-volume
-      mountPath: /.config
-    - name: shm
-      mountPath: /dev/shm
-    - name: torch-compile-cache
-      mountPath: /.cache
+    - name: vllm
+      image: "ghcr.io/llm-d/llm-d-dev:pr-188"
+      imagePullPolicy: Always
+      workingDir: /code
+      command: ["/bin/bash", "-c"]
+      modelCommand: "custom"
+      args:
+        - |-
+          #################
+          # RUN vLLM decode worker
+          #################
+          START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
+
+          source /opt/vllm/bin/activate
+          exec vllm serve \
+            deepseek-ai/DeepSeek-V3-0324 \
+            --port 8000 \
+            --disable-log-requests \
+            --disable-uvicorn-access-log \
+            --enable-expert-parallel \
+            --data-parallel-hybrid-lb \
+            --tensor-parallel-size $TP_SIZE \
+            --data-parallel-size $((LWS_GROUP_SIZE * DP_SIZE_LOCAL)) \
+            --data-parallel-size-local $DP_SIZE_LOCAL \
+            --data-parallel-address ${LWS_LEADER_ADDRESS} \
+            --data-parallel-rpc-port 5555 \
+            --data-parallel-start-rank $START_RANK \
+            --trust-remote-code \
+            --kv_transfer_config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+      ports:
+        - containerPort: 8200
+          name: metrics
+          protocol: TCP
+      env:
+        - name: VLLM_MOE_DP_CHUNK_SIZE
+          value: "1024"
+        - name: DP_SIZE_LOCAL
+          value: "8"
+        - name: TRITON_LIBCUDA_PATH
+          value: "/usr/lib64"
+        - name: HF_HUB_DISABLE_XET
+          value: "1"
+        - name: VLLM_SKIP_P2P_CHECK
+          value: "1"
+        - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+          value: "1"
+        - name: VLLM_USE_DEEP_GEMM
+          value: "1"
+        - name: VLLM_ALL2ALL_BACKEND
+          value: "deepep_high_throughput"
+        - name: NVIDIA_GDRCOPY
+          value: "enabled"
+        - name: NVSHMEM_DEBUG
+          value: "INFO"
+        - name: NVSHMEM_REMOTE_TRANSPORT
+          value: "ibgda"
+        - name: NVSHMEM_IB_ENABLE_IBGDA
+          value: "true"
+        - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
+          value: "eth0"
+        - name: GLOO_SOCKET_IFNAME
+          value: "eth0"
+        - name: NCCL_SOCKET_IFNAME
+          value: "eth0"
+        - name: NCCL_IB_HCA
+          value: "ibp"
+        - name: VLLM_LOGGING_LEVEL
+          value: "INFO"
+        - name: HF_HUB_CACHE
+          value: /huggingface-cache/hub
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        - name: VLLM_TORCH_PROFILER_DIR
+          value: /home/vllm
+        - name: DISABLE_GLOO_ALLREDUCE
+          value: "1"
+        - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      resources:
+        limits:
+          cpu: 32
+          memory: 256Gi
+          ephemeral-storage: 64Gi
+          nvidia.com/gpu: 8
+        requests:
+          cpu: 32
+          memory: 256Gi
+          ephemeral-storage: 64Gi
+          nvidia.com/gpu: 8
+      mountModelVolume: false
+      volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+        - name: hf-cache
+          mountPath: /huggingface-cache
   volumes:
-  - name: metrics-volume
-    emptyDir: {}
-  - name: shm
-    emptyDir:
-      medium: Memory
-      sizeLimit: "16Gi"
-  - name: torch-compile-cache
-    emptyDir: {}
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi
+    - name: hf-cache
+      hostPath:
+        path: /home/smo/.cache/huggingface
+        type: Directory
